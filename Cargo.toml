@@ -1,0 +1,14 @@
+[package]
+name = "packed_integers"
+version = "0.1.0"
+authors = ["DarkOtter <>"]
+license = "Apache-2.0"
+description = "A way to pack integers into variable lengths with random access"
+repository = "https://github.com/DarkOtter/packed-integers-rs"
+
+[dependencies]
+indexed_bitvec = "2.0"
+
+[dev-dependencies]
+rand = "0.5"
+criterion = "0.2"
