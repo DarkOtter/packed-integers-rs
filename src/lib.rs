@@ -311,9 +311,56 @@ impl PackedIntegers {
 }
 
 #[cfg(test)]
+extern crate rand;
+#[cfg(test)]
+#[macro_use]
+extern crate proptest;
+
+#[cfg(test)]
 mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::collection::SizeRange;
+    use core::ops::Range;
+
+    prop_compose! {
+        fn gen_chunk(len: usize)
+            (bits_used in 0..=64u32,
+             data in prop::collection::vec(any::<u64>(), len),
+             high_idx in 0..(max(len, 1)),
+             len in Just(len))
+             -> Vec<u64> {
+                let mut data = data;
+                if bits_used < 64 {
+                    let mask = u64::max_value() >> (64 - bits_used);
+                    for x in data.iter_mut() {
+                        *x &= mask
+                    }
+                }
+                if bits_used > 0 && len > 0 {
+                    let bit = 1u64 << (bits_used - 1);
+                    data[high_idx] |= bit;
+                }
+
+                data
+            }
+    }
+
+    prop_compose! {
+        fn gen_data(len: impl Into<SizeRange>)
+            (len in <Range<usize>>::from(len.into()))
+            (whole_chunks in prop::collection::vec(gen_chunk(64), len / 64),
+             partial_chunk in gen_chunk(len % 64))
+             -> Vec<u64> {
+                let mut chunks = whole_chunks;
+                chunks.push(partial_chunk);
+                let mut res = Vec::with_capacity(chunks.iter().map(|c| c.len()).sum());
+                for chunk in chunks {
+                    for item in chunk {
+                        res.push(item)
+                    }
+                }
+                res
+            }
     }
 }
