@@ -42,14 +42,16 @@ impl BuildIndex {
 
     fn with_capacity(i: usize) -> Self {
         BuildIndex {
-            data: Vec::with_capacity(i / 8),
+            data: Vec::with_capacity((i + 8) / 8),
             used_bits: 0,
         }
     }
 
-    fn into_bits(self) -> Bits<Box<[u8]>> {
-        Bits::from(self.data.into_boxed_slice(), self.used_bits).expect(
-            "We should have correctly kept track of the used bits, if not it is a bug",
+    fn into_indexed_bits(self) -> IndexedBits<Box<[u8]>> {
+        IndexedBits::build_index(
+            Bits::from(self.data.into_boxed_slice(), self.used_bits).expect(
+                "We should have correctly kept track of the used bits, if not it is a bug",
+            ),
         )
     }
 
@@ -82,101 +84,229 @@ fn find_bit_width(chunk: &[u64]) -> usize {
     max(1, 64 - leading_zeros as usize)
 }
 
-fn pack_lsbs(chunk: &[u64], into: &mut [u64]) {
+fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) -> usize {
+    debug_assert!(chunk.len() > 0);
     debug_assert!(chunk.len() <= 64);
-    debug_assert!(into.len() > 0);
-    debug_assert!(into.len() <= 64);
+    debug_assert!(n_bits > 0);
+    debug_assert!(n_bits <= 64);
+    debug_assert!(into.len() >= ((chunk.len() * n_bits) + 63) / 64);
 
-    let leading_zeros = (64 - into.len()) as u32;
+    let leading_zeros = (64 - n_bits) as u32;
     let mut idx = 0;
     let mut ready_bits = 0;
     let mut building_part = 0u64;
 
-    {
-        let mut add_item = |item: u64| {
-            building_part |= (item << leading_zeros) >> ready_bits;
-            ready_bits += 64;
-            if ready_bits >= 64 {
-                into[idx] = building_part;
-                idx += 1;
-                ready_bits -= 64;
-                building_part = 0;
+    for &item in chunk.iter() {
+        building_part |= (item << leading_zeros) >> ready_bits;
+        ready_bits += 64;
+        if ready_bits >= 64 {
+            into[idx] = building_part;
+            idx += 1;
+            ready_bits -= 64;
+            building_part = 0;
 
-                if ready_bits > 0 {
-                    building_part |= item << (64 - ready_bits)
-                }
-            }
-        };
-
-        for &item in chunk.iter() {
-            add_item(item);
-        }
-
-        if chunk.len() < 64 {
-            for _ in 0..(64 - chunk.len()) {
-                add_item(0);
+            if ready_bits > 0 {
+                building_part |= item << (64 - ready_bits)
             }
         }
     }
 
-    debug_assert_eq!(ready_bits, 0);
-    debug_assert_eq!(building_part, 0);
-    debug_assert_eq!(idx, into.len());
+    if ready_bits > 0 {
+        into[idx] = building_part;
+        idx += 1;
+    }
+
+    idx
 }
 
 impl PackedIntegers {
     pub fn from_vec(mut data: Vec<u64>) -> Self {
         let total_elements = data.len();
-        let mut index = BuildIndex::with_capacity(total_elements / 2);
-        let mut buffer = [0u64; 64];
-        let mut write_at = 0;
+        let mut index = BuildIndex::with_capacity(total_elements);
 
-        {
-            let data_len = data.len();
-            let mut write_chunk = |chunk_start, chunk_end| {
-                debug_assert!(write_at <= chunk_start);
-                debug_assert!(chunk_start <= chunk_end);
+        fn build_initially_with_buffer(
+            data: &mut Vec<u64>,
+            index: &mut BuildIndex,
+        ) -> (usize, usize) {
+            let total_elements = data.len();
+            let mut buffer = [0u64; 64];
+            let mut read_from = 0;
+            let mut write_at = 0;
 
-                let chunk_output_length = {
+            while read_from < total_elements && write_at + 64 > read_from {
+                let chunk_start = read_from;
+                let chunk_end = min(total_elements, chunk_start + 64);
+
+                let (chunk_bit_width, chunk_output_length) = {
                     let chunk = &data[chunk_start..chunk_end];
-                    let chunk_output_length = find_bit_width(chunk);
-                    pack_lsbs(chunk, &mut buffer[..chunk_output_length]);
-                    chunk_output_length
+                    let bit_width = find_bit_width(chunk);
+                    (bit_width, pack_lsbs(chunk, bit_width, &mut buffer))
                 };
 
+                debug_assert!(chunk_bit_width > 0);
+                debug_assert!(chunk_bit_width <= 64);
                 debug_assert!(chunk_output_length > 0);
                 debug_assert!(chunk_output_length <= 64);
 
                 index.push_one_bit();
-                index.push_zero_bits(chunk_output_length - 1);
+                index.push_zero_bits(chunk_bit_width - 1);
 
-                let write_back_length = min(chunk_end - chunk_start, chunk_output_length);
+                (&mut data[write_at..write_at + chunk_output_length])
+                    .copy_from_slice(&buffer[..chunk_output_length]);
 
-                (&mut data[write_at..write_at + write_back_length])
-                    .copy_from_slice(&buffer[..write_back_length]);
-                write_at += write_back_length;
-            };
-
-            let n_whole_chunks = data_len / 64;
-            for i in 0..n_whole_chunks {
-                let chunk_start = i * 64;
-                write_chunk(chunk_start, chunk_start + 64);
+                read_from = chunk_end;
+                write_at += chunk_output_length;
             }
 
-            let last_whole_chunk_end = n_whole_chunks * 64;
-            if last_whole_chunk_end < data_len {
-                write_chunk(last_whole_chunk_end, data_len);
-            }
-        };
+            (read_from, write_at)
+        }
+
+        let (mut read_from, mut write_at) = build_initially_with_buffer(&mut data, &mut index);
+
+        while read_from < total_elements {
+            debug_assert!(write_at + 64 <= read_from);
+
+            let chunk_start = read_from;
+
+            let (writing_part, reading_part) = data.as_mut_slice().split_at_mut(chunk_start);
+            let chunk_len = min(reading_part.len(), 64);
+
+            let chunk = &reading_part[..chunk_len];
+            let chunk_bit_width = find_bit_width(chunk);
+            let chunk_output_length =
+                pack_lsbs(chunk, chunk_bit_width, &mut writing_part[write_at..]);
+
+            debug_assert!(chunk_bit_width > 0);
+            debug_assert!(chunk_bit_width <= 64);
+            debug_assert!(chunk_output_length > 0);
+            debug_assert!(chunk_output_length <= 64);
+
+            index.push_one_bit();
+            index.push_zero_bits(chunk_bit_width - 1);
+
+            read_from = chunk_start + chunk_len;
+            write_at += chunk_output_length;
+
+            debug_assert!(write_at + 64 <= read_from);
+        }
 
         index.push_one_bit();
         data.truncate(write_at);
 
         PackedIntegers {
-            index: IndexedBits::build_index(index.into_bits()),
+            index: index.into_indexed_bits(),
             data: data.into_boxed_slice(),
             len: total_elements,
         }
+    }
+
+    pub fn from_iter<I, T>(iter: I) -> Self
+    where
+        T: Into<u64>,
+        I: IntoIterator<Item = T>,
+    {
+        let iter = iter.into_iter();
+        let size_hint = match iter.size_hint() {
+            (min, None) => min,
+            (_, Some(max)) => max,
+        };
+        let mut index = if size_hint >= 64 {
+            BuildIndex::with_capacity(size_hint)
+        } else {
+            BuildIndex::new()
+        };
+        let mut data = if size_hint >= 64 {
+            Vec::with_capacity(64)
+        } else {
+            Vec::new()
+        };
+
+        let mut buffer = [0u64; 64];
+        let mut in_buffer = 0;
+        let mut total_elements = 0;
+
+        {
+            let mut write_chunk = |chunk: &[u64]| {
+                debug_assert!(chunk.len() > 0);
+                debug_assert!(chunk.len() <= 64);
+
+                let bit_width = find_bit_width(chunk);
+                debug_assert!(bit_width > 0);
+                debug_assert!(bit_width <= 64);
+
+                let output_size = ((bit_width * chunk.len()) + 63) / 64;
+                data.reserve(output_size);
+                let write_at = data.len();
+                for _ in 0..output_size {
+                    data.push(0)
+                }
+
+                let output_size = pack_lsbs(chunk, bit_width, &mut data[write_at..]);
+                data.truncate(write_at + output_size);
+
+                index.push_one_bit();
+                index.push_zero_bits(bit_width - 1);
+            };
+
+            for item in iter {
+                total_elements += 1;
+                buffer[in_buffer] = item.into();
+                in_buffer += 1;
+
+                if in_buffer == 64 {
+                    write_chunk(&buffer)
+                }
+            }
+
+            if in_buffer > 0 {
+                write_chunk(&buffer[..in_buffer])
+            }
+        }
+
+        index.push_one_bit();
+
+        PackedIntegers {
+            index: index.into_indexed_bits(),
+            data: data.into_boxed_slice(),
+            len: total_elements,
+        }
+    }
+
+    pub fn get(&self, idx: usize) -> Option<u64> {
+        if idx >= self.len {
+            return None;
+        }
+
+        let idx_of_block = (idx / 64) as u64;
+        let idx_in_block = idx % 64;
+
+        let block_start = self.index.select_ones(idx_of_block).expect(
+            "If we don't have as many bits set as we expect then there was a bug",
+        ) as usize;
+        let block_fake_end = self.index.select_ones(idx_of_block + 1).expect(
+            "If we don't have as many bits set as we expect then there was a bug",
+        ) as usize - block_start;
+        let bit_width = block_fake_end - block_start;
+
+        let bit_idx_in_block = idx_in_block * bit_width;
+
+        let whole_words_offset = bit_idx_in_block / 64;
+        let in_word_offset = bit_idx_in_block % 64;
+
+        let first_part = {
+            (self.data[block_start + whole_words_offset] << in_word_offset) >> (64 - bit_width)
+        };
+
+        if in_word_offset + bit_width <= 64 {
+            Some(first_part)
+        } else {
+            Some(
+                first_part |
+                    (self.data[block_start + whole_words_offset + 1] >>
+                         (128 - (in_word_offset + bit_width))),
+            )
+        }
+
     }
 }
 
