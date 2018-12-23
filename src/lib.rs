@@ -287,6 +287,8 @@ impl PackedIntegers {
             "If we don't have as many bits set as we expect then there was a bug",
         ) as usize - block_start;
         let bit_width = block_fake_end - block_start;
+        debug_assert!(bit_width > 0);
+        debug_assert!(bit_width <= 64);
 
         let bit_idx_in_block = idx_in_block * bit_width;
 
@@ -310,6 +312,16 @@ impl PackedIntegers {
     }
 }
 
+impl std::cmp::PartialEq for PackedIntegers {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len
+            && self.index.bits() == other.index.bits()
+            && self.data == other.data
+    }
+}
+
+impl std::cmp::Eq for PackedIntegers {}
+
 #[cfg(test)]
 extern crate rand;
 #[cfg(test)]
@@ -321,46 +333,48 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest::collection::SizeRange;
-    use core::ops::Range;
+    use proptest::collection::vec as gen_vec;
 
     prop_compose! {
-        fn gen_chunk(len: usize)
-            (bits_used in 0..=64u32,
-             data in prop::collection::vec(any::<u64>(), len),
-             high_idx in 0..(max(len, 1)),
-             len in Just(len))
-             -> Vec<u64> {
+        fn gen_data(len: impl Into<SizeRange>)
+            (data in gen_vec(any::<u64>(), len))
+            (chunk_info in gen_vec((0..=64u32, 0..64usize), (data.len() + 63) / 64),
+             data in Just(data)
+            )
+            -> Vec<u64> {
                 let mut data = data;
-                if bits_used < 64 {
-                    let mask = u64::max_value() >> (64 - bits_used);
-                    for x in data.iter_mut() {
-                        *x &= mask
+
+                let iter = 
+                data
+                    .chunks_mut(64)
+                    .zip(chunk_info.into_iter());
+                for (chunk, (bits_used, high_idx)) in iter {
+                    if bits_used < 64 {
+                        let mask =
+                            if bits_used == 0 { 0 } else {
+                                u64::max_value() >> (64 - bits_used)
+                            };
+                        for x in chunk.iter_mut() {
+                            *x &= mask
+                        }
                     }
-                }
-                if bits_used > 0 && len > 0 {
-                    let bit = 1u64 << (bits_used - 1);
-                    data[high_idx] |= bit;
+                    if bits_used > 0 && chunk.len() > 0 {
+                        let bit = 1u64 << (bits_used - 1);
+                        chunk[high_idx % chunk.len()] |= bit;
+                    }
                 }
 
                 data
             }
     }
 
-    prop_compose! {
-        fn gen_data(len: impl Into<SizeRange>)
-            (len in <Range<usize>>::from(len.into()))
-            (whole_chunks in prop::collection::vec(gen_chunk(64), len / 64),
-             partial_chunk in gen_chunk(len % 64))
-             -> Vec<u64> {
-                let mut chunks = whole_chunks;
-                chunks.push(partial_chunk);
-                let mut res = Vec::with_capacity(chunks.iter().map(|c| c.len()).sum());
-                for chunk in chunks {
-                    for item in chunk {
-                        res.push(item)
-                    }
-                }
-                res
-            }
+    proptest! {
+        #[test]
+        fn build_is_idempotent(data in gen_data(0..1000)) {
+            let build_a = PackedIntegers::from_iter(data.iter().cloned());
+            let build_b = PackedIntegers::from_iter(data.iter().cloned());
+
+            prop_assert_eq!(true, build_a.eq(&build_b));
+        }
     }
 }
