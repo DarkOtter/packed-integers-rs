@@ -245,11 +245,8 @@ impl PackedIntegers {
                     data.push(0)
                 }
 
-
-
                 let output_size = {
                     let write_into = &mut data[write_at..];
-                    println!("pack_lsbs(len: {}, {}, len: {})", chunk.len(), bit_width, write_into.len());
                     pack_lsbs(chunk, bit_width, write_into)
                 };
                 data.truncate(write_at + output_size);
