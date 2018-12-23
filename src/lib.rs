@@ -283,6 +283,21 @@ impl PackedIntegers {
         }
     }
 
+    /// Get the integer at a specific index.
+    ///
+    /// Returns `None` for out-of-bounds.
+    ///
+    /// ```
+    /// use rand::prelude::*;
+    /// use packed_integers::*;
+    /// let unpacked: Vec<u64> = (0..139).map(|_| rand::random()).collect();
+    /// let packed = PackedIntegers::from_iter(unpacked.iter().cloned());
+    /// assert_eq!(Some(unpacked[7]), packed.get(7));
+    /// assert_eq!(Some(unpacked[112]), packed.get(112));
+    /// assert_eq!(Some(unpacked[138]), packed.get(138));
+    /// assert_eq!(None, packed.get(139));
+    /// assert_eq!(None, packed.get(150));
+    /// ```
     pub fn get(&self, idx: usize) -> Option<u64> {
         if idx >= self.len {
             return None;
@@ -296,7 +311,7 @@ impl PackedIntegers {
         ) as usize;
         let block_fake_end = self.index.select_ones(idx_of_block + 1).expect(
             "If we don't have as many bits set as we expect then there was a bug",
-        ) as usize - block_start;
+        ) as usize;
         let bit_width = block_fake_end - block_start;
         debug_assert!(bit_width > 0);
         debug_assert!(bit_width <= 64);
