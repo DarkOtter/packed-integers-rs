@@ -98,7 +98,7 @@ fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) -> usize {
 
     for &item in chunk.iter() {
         building_part |= (item << leading_zeros) >> ready_bits;
-        ready_bits += 64;
+        ready_bits += n_bits;
         if ready_bits >= 64 {
             into[idx] = building_part;
             idx += 1;
@@ -235,13 +235,23 @@ impl PackedIntegers {
                 debug_assert!(bit_width <= 64);
 
                 let output_size = ((bit_width * chunk.len()) + 63) / 64;
+                debug_assert!(output_size > 0);
+                debug_assert!(output_size <= 64);
+                debug_assert!(output_size <= chunk.len());
+
                 data.reserve(output_size);
                 let write_at = data.len();
                 for _ in 0..output_size {
                     data.push(0)
                 }
 
-                let output_size = pack_lsbs(chunk, bit_width, &mut data[write_at..]);
+
+
+                let output_size = {
+                    let write_into = &mut data[write_at..];
+                    println!("pack_lsbs(len: {}, {}, len: {})", chunk.len(), bit_width, write_into.len());
+                    pack_lsbs(chunk, bit_width, write_into)
+                };
                 data.truncate(write_at + output_size);
 
                 index.push_one_bit();
@@ -253,8 +263,9 @@ impl PackedIntegers {
                 buffer[in_buffer] = item.into();
                 in_buffer += 1;
 
-                if in_buffer == 64 {
-                    write_chunk(&buffer)
+                if in_buffer == buffer.len() {
+                    write_chunk(&buffer);
+                    in_buffer = 0;
                 }
             }
 
@@ -368,9 +379,18 @@ mod tests {
             }
     }
 
+    #[test]
+    fn pack_lsbs_ready_increment_bug() {
+        // pack_lsbs had a bug where it was always adding 64 new bits every time
+        // this would result in a panic (at least in dev build)
+        let chunk = &[0u64; 2];
+        let mut output = [0u64; 1];
+        assert_eq!(1, pack_lsbs(chunk, 1, &mut output));
+    }
+
     proptest! {
         #[test]
-        fn build_is_idempotent(data in gen_data(0..1000)) {
+        fn from_iter_is_repeatable(data in gen_data(0..1000)) {
             let build_a = PackedIntegers::from_iter(data.iter().cloned());
             let build_b = PackedIntegers::from_iter(data.iter().cloned());
 
