@@ -17,6 +17,7 @@
 use std::cmp::{max, min};
 
 extern crate indexed_bitvec;
+extern crate indexed_bitvec_core;
 use indexed_bitvec::{Bits, IndexedBits};
 
 fn must_have_or_bug<T>(opt: Option<T>) -> T {
@@ -351,54 +352,8 @@ impl std::cmp::PartialEq for PackedIntegers {
 
 impl std::cmp::Eq for PackedIntegers {}
 
-#[derive(Debug)]
-struct BitIndexIterator<'a> {
-    search_from: u64,
-    search_in: Bits<&'a [u8]>,
-}
-
-fn set_bit_indexes<'a>(bits: Bits<&'a [u8]>) -> BitIndexIterator<'a> {
-    BitIndexIterator {
-        search_from: 0,
-        search_in: bits,
-    }
-}
-
-impl<'a> Iterator for BitIndexIterator<'a> {
-    type Item = u64;
-
-    fn next(&mut self) -> Option<u64> {
-        if self.search_from >= self.search_in.used_bits() {
-            return None;
-        }
-
-        let byte_index = (self.search_from / 8) as usize;
-        let byte_offset = (self.search_from % 8) as u32;
-
-        let remaining_bytes = &(self.search_in.all_bytes())[byte_index..];
-        let already_seen_bits_mask = !(u8::max_value() >> byte_offset);
-        let skip_set_bits = (remaining_bytes[0] & already_seen_bits_mask).count_ones();
-
-        let starting_offset_bits = (byte_index as u64) * 8;
-        let remaining_bits = must_have_or_bug(Bits::from(
-            remaining_bytes, self.search_in.used_bits() - starting_offset_bits));
-
-        match remaining_bits.select_ones(skip_set_bits as u64) {
-            None => {
-                self.search_from = self.search_in.used_bits();
-                None
-            },
-            Some(next_sub_idx) => {
-                let res = starting_offset_bits + next_sub_idx;
-                self.search_from = res + 1;
-                Some(res)
-            },
-        }
-    }
-}
-
 pub struct PackedIntegersIterator<'a> {
-    index: BitIndexIterator<'a>,
+    index: indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>,
     data: std::slice::Iter<'a, u64>,
     current_data: u64,
     chunk_mark: u64,
@@ -410,7 +365,7 @@ pub struct PackedIntegersIterator<'a> {
 
 impl PackedIntegers {
     pub fn iter<'a>(&'a self) -> PackedIntegersIterator<'a> {
-        let mut index_iter = set_bit_indexes(self.index.bits());
+        let mut index_iter = self.index.bits().into_iter_set_bits();
         let first_bit_idx = must_have_or_bug(index_iter.next());
 
         PackedIntegersIterator {

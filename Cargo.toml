@@ -8,7 +8,8 @@ description = "A way to pack integers into variable lengths with random access"
 repository = "https://github.com/DarkOtter/packed-integers-rs"
 
 [dependencies]
-indexed_bitvec = "2.2"
+indexed_bitvec = "2.3"
+indexed_bitvec_core = "3.0"
 
 [dev-dependencies]
 rand = "0.6"
