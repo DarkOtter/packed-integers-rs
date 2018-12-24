@@ -347,19 +347,14 @@ impl PackedIntegers {
                          (128 - (in_word_offset + bit_width))),
             )
         }
-
     }
-}
 
-impl std::cmp::PartialEq for PackedIntegers {
-    fn eq(&self, other: &Self) -> bool {
+    pub fn structural_eq(&self, other: &Self) -> bool {
         self.len == other.len
             && self.index.bits() == other.index.bits()
             && self.data == other.data
     }
 }
-
-impl std::cmp::Eq for PackedIntegers {}
 
 pub struct PackedIntegersIterator<'a> {
     index: indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>,
@@ -533,7 +528,7 @@ mod tests {
         fn iter_pack_round_trip(packed in gen_packed(0..1000)) {
             let unpacked: Vec<_> = packed.iter().collect();
             let repacked = PackedIntegers::from_iter(unpacked.iter().cloned());
-            prop_assert_eq!(packed, repacked);
+            prop_assert!(packed.structural_eq(&repacked));
         }
     }
 
@@ -552,7 +547,7 @@ mod tests {
             let build_a = PackedIntegers::from_iter(data.iter().cloned());
             let build_b = PackedIntegers::from_iter(data.iter().cloned());
 
-            prop_assert_eq!(true, build_a.eq(&build_b));
+            prop_assert!(build_a.structural_eq(&build_b));
         }
 
         #[test]
@@ -560,7 +555,7 @@ mod tests {
             let build_a = PackedIntegers::from_iter(data.iter().cloned());
             let build_b = PackedIntegers::from_vec(data);
 
-            prop_assert_eq!(build_a, build_b);
+            prop_assert!(build_a.structural_eq(&build_b));
         }
 
         #[test]
