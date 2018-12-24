@@ -32,6 +32,15 @@ pub struct PackedIntegers {
     len: usize,
 }
 
+#[cfg(feature = "implement_heapsize")]
+impl heapsize::HeapSizeOf for PackedIntegers {
+    fn heap_size_of_children(&self) -> usize {
+        self.index.heap_size_of_children()
+            + self.data.heap_size_of_children()
+            + self.len.heap_size_of_children()
+    }
+}
+
 impl PackedIntegers {
     pub fn len(&self) -> usize {
         self.len
