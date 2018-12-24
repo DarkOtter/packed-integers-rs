@@ -19,10 +19,6 @@ use std::cmp::{max, min};
 extern crate indexed_bitvec;
 use indexed_bitvec::{Bits, IndexedBits};
 
-// TODO: Add unpack
-// TODO: Vectorised pack/unpack?
-// TODO: Parallel pack/unpack?
-
 fn must_have_or_bug<T>(opt: Option<T>) -> T {
     opt.expect(
         "If this happens there is a bug in the PackedIntegers implementation")
@@ -533,7 +529,9 @@ mod tests {
 
                 data
             }
+    }
 
+    prop_compose! {
         // TODO: Direct packed data generator
         fn gen_packed(len: impl Into<SizeRange>)
             (input_data in gen_data(len))
@@ -566,6 +564,13 @@ mod tests {
             let unpacked: Vec<_> = packed.iter().collect();
             prop_assert_eq!(data, unpacked);
         }
+
+        #[test]
+        fn iter_pack_round_trip(packed in gen_packed(0..1000)) {
+            let unpacked: Vec<_> = packed.iter().collect();
+            let repacked = PackedIntegers::from_iter(unpacked.iter().cloned());
+            prop_assert_eq!(packed, repacked);
+        }
     }
 
     #[test]
@@ -587,7 +592,7 @@ mod tests {
         }
 
         #[test]
-        fn from_iter_from_get_agreement(data in gen_data(0..1000)) {
+        fn from_iter_from_vec_agreement(data in gen_data(0..1000)) {
             let build_a = PackedIntegers::from_iter(data.iter().cloned());
             let build_b = PackedIntegers::from_vec(data);
 
@@ -595,8 +600,7 @@ mod tests {
         }
 
         #[test]
-        fn iter_get_agreement(data in gen_data(0..1000)) {
-            let packed = PackedIntegers::from_vec(data);
+        fn iter_get_agreement(packed in gen_packed(0..1000)) {
             let unpacked_a : Vec<_> = packed.iter().collect();
             let unpacked_b : Vec<_> = (0..packed.len()).map(|idx| packed.get(idx).unwrap()).collect();
             prop_assert_eq!(unpacked_a, unpacked_b);
