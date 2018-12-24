@@ -19,11 +19,26 @@ use std::cmp::{max, min};
 extern crate indexed_bitvec;
 use indexed_bitvec::{Bits, IndexedBits};
 
+// TODO: Add unpack
+// TODO: Vectorised pack/unpack?
+// TODO: Parallel pack/unpack?
+
+fn must_have_or_bug<T>(opt: Option<T>) -> T {
+    opt.expect(
+        "If this happens there is a bug in the PackedIntegers implementation")
+}
+
 #[derive(Clone, Debug)]
 pub struct PackedIntegers {
     index: IndexedBits<Box<[u8]>>,
     data: Box<[u64]>,
     len: usize,
+}
+
+impl PackedIntegers {
+    pub fn len(&self) -> usize {
+        self.len
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -49,10 +64,7 @@ impl BuildIndex {
 
     fn into_indexed_bits(self) -> IndexedBits<Box<[u8]>> {
         IndexedBits::build_index(
-            Bits::from(self.data.into_boxed_slice(), self.used_bits).expect(
-                "We should have correctly kept track of the used bits, if not it is a bug",
-            ),
-        )
+            must_have_or_bug(Bits::from(self.data.into_boxed_slice(), self.used_bits)))
     }
 
     fn push_one_bit(&mut self) {
@@ -303,12 +315,10 @@ impl PackedIntegers {
         let idx_of_block = (idx / 64) as u64;
         let idx_in_block = idx % 64;
 
-        let block_start = self.index.select_ones(idx_of_block).expect(
-            "If we don't have as many bits set as we expect then there was a bug",
-        ) as usize;
-        let block_fake_end = self.index.select_ones(idx_of_block + 1).expect(
-            "If we don't have as many bits set as we expect then there was a bug",
-        ) as usize;
+        let block_start =
+            must_have_or_bug(self.index.select_ones(idx_of_block)) as usize;
+        let block_fake_end =
+            must_have_or_bug(self.index.select_ones(idx_of_block + 1)) as usize;
         let bit_width = block_fake_end - block_start;
         debug_assert!(bit_width > 0);
         debug_assert!(bit_width <= 64);
@@ -344,6 +354,140 @@ impl std::cmp::PartialEq for PackedIntegers {
 }
 
 impl std::cmp::Eq for PackedIntegers {}
+
+#[derive(Debug)]
+struct BitIndexIterator<'a> {
+    search_from: u64,
+    search_in: Bits<&'a [u8]>,
+}
+
+fn set_bit_indexes<'a>(bits: Bits<&'a [u8]>) -> BitIndexIterator<'a> {
+    BitIndexIterator {
+        search_from: 0,
+        search_in: bits,
+    }
+}
+
+impl<'a> Iterator for BitIndexIterator<'a> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<u64> {
+        if self.search_from >= self.search_in.used_bits() {
+            return None;
+        }
+
+        let byte_index = (self.search_from / 8) as usize;
+        let byte_offset = (self.search_from % 8) as u32;
+
+        let remaining_bytes = &(self.search_in.all_bytes())[byte_index..];
+        let already_seen_bits_mask = !(u8::max_value() >> byte_offset);
+        let skip_set_bits = (remaining_bytes[0] & already_seen_bits_mask).count_ones();
+
+        let starting_offset_bits = (byte_index as u64) * 8;
+        let remaining_bits = must_have_or_bug(Bits::from(
+            remaining_bytes, self.search_in.used_bits() - starting_offset_bits));
+
+        match remaining_bits.select_ones(skip_set_bits as u64) {
+            None => {
+                self.search_from = self.search_in.used_bits();
+                None
+            },
+            Some(next_sub_idx) => {
+                let res = starting_offset_bits + next_sub_idx;
+                self.search_from = res + 1;
+                Some(res)
+            },
+        }
+    }
+}
+
+pub struct PackedIntegersIterator<'a> {
+    index: BitIndexIterator<'a>,
+    data: std::slice::Iter<'a, u64>,
+    current_data: u64,
+    chunk_mark: u64,
+    chunk_remain: usize,
+    total_remain: usize,
+    chunk_bits: u32,
+    current_bits: u32,
+}
+
+impl PackedIntegers {
+    pub fn iter<'a>(&'a self) -> PackedIntegersIterator<'a> {
+        let mut index_iter = set_bit_indexes(self.index.bits());
+        let first_bit_idx = must_have_or_bug(index_iter.next());
+
+        PackedIntegersIterator {
+            index: index_iter,
+            data: self.data.iter(),
+            chunk_bits: 0,
+            chunk_mark: first_bit_idx,
+            chunk_remain: 0,
+            current_data: 0,
+            current_bits: 0,
+            total_remain: self.len
+        }
+    }
+}
+
+impl<'a> Iterator for PackedIntegersIterator<'a> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<u64> {
+        if self.total_remain == 0 {
+            return None
+        }
+
+        if self.chunk_remain == 0 {
+            debug_assert!(self.current_bits == 0);
+            let next_chunk_mark = must_have_or_bug(self.index.next());
+            self.chunk_bits = (next_chunk_mark - self.chunk_mark) as u32;
+            self.chunk_mark = next_chunk_mark;
+            self.chunk_remain = 64;
+        }
+
+        debug_assert!(self.total_remain > 0);
+        debug_assert!(self.chunk_remain > 0);
+        debug_assert!(self.chunk_bits > 0);
+        debug_assert!(self.chunk_bits <= 64);
+
+        let mask = u64::max_value() >> (64 - self.chunk_bits);
+
+        if self.current_bits == 0 {
+            self.current_data = *must_have_or_bug(self.data.next());
+            self.current_bits = 64;
+        }
+
+        debug_assert!(self.current_bits > 0);
+
+        let ret =
+            if self.current_bits >= self.chunk_bits {
+                let ret = {
+                    let shift = self.current_bits - self.chunk_bits;
+                    (self.current_data >> shift) & mask
+                };
+                self.current_bits -= self.chunk_bits;
+                ret
+            } else {
+                let next_data = *must_have_or_bug(self.data.next());
+                let used_extra_bits = self.chunk_bits - self.current_bits;
+                let ret = {
+                    let from_current = self.current_data << used_extra_bits;
+                    let from_next = next_data >> (64 - used_extra_bits);
+                    (from_current | from_next) & mask
+                };
+                self.current_data = next_data;
+                self.current_bits = 64 - used_extra_bits;
+                ret
+            };
+        self.chunk_remain -= 1;
+        self.total_remain -= 1;
+        Some(ret)
+    }
+}
+
+
+
 
 #[cfg(test)]
 extern crate rand;
@@ -389,6 +533,39 @@ mod tests {
 
                 data
             }
+
+        // TODO: Direct packed data generator
+        fn gen_packed(len: impl Into<SizeRange>)
+            (input_data in gen_data(len))
+             -> PackedIntegers {
+                PackedIntegers::from_vec(input_data)
+            }
+    }
+
+    #[test]
+    fn iter_basic_tests() {
+        fn check(data: Vec<u64>) {
+            let packed = PackedIntegers::from_iter(data.iter().cloned());
+            assert_eq!(data.len(), packed.len());
+            let unpacked : Vec<_> = packed.iter().collect();
+            assert_eq!(data, unpacked);
+        }
+
+        check(vec![]);
+        check(vec![0]);
+        check(vec![u64::max_value()]);
+        check(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        check(vec![42; 424]);
+    }
+
+    proptest! {
+        #[test]
+        fn pack_iter_round_trip(data in gen_data(0..1000)) {
+            let packed = PackedIntegers::from_iter(data.iter().cloned());
+            prop_assert_eq!(data.len(), packed.len());
+            let unpacked: Vec<_> = packed.iter().collect();
+            prop_assert_eq!(data, unpacked);
+        }
     }
 
     #[test]
@@ -407,6 +584,22 @@ mod tests {
             let build_b = PackedIntegers::from_iter(data.iter().cloned());
 
             prop_assert_eq!(true, build_a.eq(&build_b));
+        }
+
+        #[test]
+        fn from_iter_from_get_agreement(data in gen_data(0..1000)) {
+            let build_a = PackedIntegers::from_iter(data.iter().cloned());
+            let build_b = PackedIntegers::from_vec(data);
+
+            prop_assert_eq!(build_a, build_b);
+        }
+
+        #[test]
+        fn iter_get_agreement(data in gen_data(0..1000)) {
+            let packed = PackedIntegers::from_vec(data);
+            let unpacked_a : Vec<_> = packed.iter().collect();
+            let unpacked_b : Vec<_> = (0..packed.len()).map(|idx| packed.get(idx).unwrap()).collect();
+            prop_assert_eq!(unpacked_a, unpacked_b);
         }
     }
 }
