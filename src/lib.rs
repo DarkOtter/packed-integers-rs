@@ -102,15 +102,19 @@ fn find_bit_width(chunk: &[u64]) -> usize {
     max(1, 64 - leading_zeros as usize)
 }
 
-fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) -> usize {
+fn compressed_length(n: usize, n_bits: usize) -> usize {
+    ((n * n_bits) + 63) / 64
+}
+
+fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) {
     debug_assert!(chunk.len() > 0);
     debug_assert!(chunk.len() <= 64);
     debug_assert!(n_bits > 0);
     debug_assert!(n_bits <= 64);
-    debug_assert!(into.len() >= ((chunk.len() * n_bits) + 63) / 64);
+    debug_assert!(into.len() == compressed_length(chunk.len(), n_bits));
 
     let leading_zeros = (64 - n_bits) as u32;
-    let mut idx = 0;
+    let mut into = into.iter_mut();
     let mut ready_bits = 0;
     let mut building_part = 0u64;
 
@@ -118,8 +122,7 @@ fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) -> usize {
         building_part |= (item << leading_zeros) >> ready_bits;
         ready_bits += n_bits;
         if ready_bits >= 64 {
-            into[idx] = building_part;
-            idx += 1;
+            *(must_have_or_bug(into.next())) = building_part;
             ready_bits -= 64;
             building_part = 0;
 
@@ -130,11 +133,52 @@ fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) -> usize {
     }
 
     if ready_bits > 0 {
-        into[idx] = building_part;
-        idx += 1;
+        *(must_have_or_bug(into.next())) = building_part;
     }
+}
 
-    idx
+fn unpack_lsbs(from: &[u64], n_bits: usize, chunk: &mut [u64]) {
+    debug_assert!(chunk.len() > 0);
+    debug_assert!(chunk.len() <= 64);
+    debug_assert!(n_bits > 0);
+    debug_assert!(n_bits <= 64);
+    debug_assert!(from.len() == compressed_length(chunk.len(), n_bits));
+
+    let n_bits = n_bits as u32;
+    let leading_zeros = 64 - n_bits;
+    let mut chunk = chunk.iter_mut();
+    let mut ready_bits = 0;
+    let mut reading_part = 0u64;
+
+    'outer: for &item in from.iter() {
+        if ready_bits > 0 {
+            debug_assert!(n_bits > ready_bits);
+            let overflow = n_bits - ready_bits;
+            reading_part |= item >> ready_bits;
+            *(must_have_or_bug(chunk.next())) = reading_part >> leading_zeros;
+            reading_part = item << overflow;
+            ready_bits = 64 - overflow;
+        } else {
+            reading_part = item;
+            ready_bits = 64;
+        }
+
+        loop {
+            if ready_bits < n_bits { continue 'outer };
+            match chunk.next() {
+                None => break 'outer,
+                Some(write_to) => {
+                    *write_to = reading_part >> leading_zeros;
+                    if n_bits < 64 {
+                        reading_part <<= n_bits;
+                    } else {
+                        reading_part = 0;
+                    }
+                    ready_bits -= n_bits;
+                },
+            }
+        }
+    }
 }
 
 impl PackedIntegers {
@@ -158,7 +202,9 @@ impl PackedIntegers {
                 let (chunk_bit_width, chunk_output_length) = {
                     let chunk = &data[chunk_start..chunk_end];
                     let bit_width = find_bit_width(chunk);
-                    (bit_width, pack_lsbs(chunk, bit_width, &mut buffer))
+                    let output_length = compressed_length(chunk.len(), bit_width);
+                    pack_lsbs(chunk, bit_width, &mut buffer[..output_length]);
+                    (bit_width, output_length)
                 };
 
                 debug_assert!(chunk_bit_width > 0);
@@ -191,8 +237,11 @@ impl PackedIntegers {
 
             let chunk = &reading_part[..chunk_len];
             let chunk_bit_width = find_bit_width(chunk);
-            let chunk_output_length =
-                pack_lsbs(chunk, chunk_bit_width, &mut writing_part[write_at..]);
+            let chunk_output_length = compressed_length(chunk.len(), chunk_bit_width);
+            pack_lsbs(
+                chunk,
+                chunk_bit_width,
+                &mut writing_part[write_at..write_at + chunk_output_length]);
 
             debug_assert!(chunk_bit_width > 0);
             debug_assert!(chunk_bit_width <= 64);
@@ -263,7 +312,8 @@ impl PackedIntegers {
                     data.push(0)
                 }
 
-                let output_size = {
+                let output_size = compressed_length(chunk.len(), bit_width);
+                {
                     let write_into = &mut data[write_at..];
                     pack_lsbs(chunk, bit_width, write_into)
                 };
@@ -356,93 +406,155 @@ impl PackedIntegers {
     }
 }
 
-pub struct PackedIntegersIterator<'a> {
-    index: indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>,
-    data: std::slice::Iter<'a, u64>,
-    current_data: u64,
-    chunk_mark: u64,
-    chunk_remain: usize,
-    total_remain: usize,
-    chunk_bits: u32,
-    current_bits: u32,
+trait NextChunkOfInts {
+    fn take_ints(&mut self, upto_n: usize) -> Option<&[u64]>;
 }
 
-impl PackedIntegers {
-    pub fn iter<'a>(&'a self) -> PackedIntegersIterator<'a> {
-        let mut index_iter = self.index.bits().into_iter_set_bits();
-        let first_bit_idx = must_have_or_bug(index_iter.next());
+struct BorrowData<'a>(&'a [u64]);
 
-        PackedIntegersIterator {
-            index: index_iter,
-            data: self.data.iter(),
-            chunk_bits: 0,
-            chunk_mark: first_bit_idx,
-            chunk_remain: 0,
-            current_data: 0,
-            current_bits: 0,
-            total_remain: self.len
-        }
-    }
-}
-
-impl<'a> Iterator for PackedIntegersIterator<'a> {
-    type Item = u64;
-
-    fn next(&mut self) -> Option<u64> {
-        if self.total_remain == 0 {
-            return None
-        }
-
-        if self.chunk_remain == 0 {
-            debug_assert!(self.current_bits == 0);
-            let next_chunk_mark = must_have_or_bug(self.index.next());
-            self.chunk_bits = (next_chunk_mark - self.chunk_mark) as u32;
-            self.chunk_mark = next_chunk_mark;
-            self.chunk_remain = 64;
-        }
-
-        debug_assert!(self.total_remain > 0);
-        debug_assert!(self.chunk_remain > 0);
-        debug_assert!(self.chunk_bits > 0);
-        debug_assert!(self.chunk_bits <= 64);
-
-        let mask = u64::max_value() >> (64 - self.chunk_bits);
-
-        if self.current_bits == 0 {
-            self.current_data = *must_have_or_bug(self.data.next());
-            self.current_bits = 64;
-        }
-
-        debug_assert!(self.current_bits > 0);
-
-        let ret =
-            if self.current_bits >= self.chunk_bits {
-                let ret = {
-                    let shift = self.current_bits - self.chunk_bits;
-                    (self.current_data >> shift) & mask
-                };
-                self.current_bits -= self.chunk_bits;
-                ret
-            } else {
-                let next_data = *must_have_or_bug(self.data.next());
-                let used_extra_bits = self.chunk_bits - self.current_bits;
-                let ret = {
-                    let from_current = self.current_data << used_extra_bits;
-                    let from_next = next_data >> (64 - used_extra_bits);
-                    (from_current | from_next) & mask
-                };
-                self.current_data = next_data;
-                self.current_bits = 64 - used_extra_bits;
-                ret
-            };
-        self.chunk_remain -= 1;
-        self.total_remain -= 1;
+impl<'a> NextChunkOfInts for BorrowData<'a> {
+    fn take_ints(&mut self, upto_n: usize) -> Option<&[u64]> {
+        debug_assert!(upto_n > 0);
+        debug_assert!(upto_n <= 64);
+        let l = min(upto_n, self.0.len());
+        if l == 0 { return None };
+        let (ret, remaining) = self.0.split_at(l);
+        self.0 = remaining;
         Some(ret)
     }
 }
 
+struct ConsumeData {
+    data: Box<[u64]>,
+    consume_from: usize,
+}
 
+impl NextChunkOfInts for ConsumeData {
+    fn take_ints(&mut self, upto_n: usize) -> Option<&[u64]> {
+        debug_assert!(upto_n > 0);
+        debug_assert!(upto_n <= 64);
+        let start = self.consume_from;
+        let end = min(start + upto_n, self.data.len());
+        if end <= start { return None };
+        self.consume_from = end;
+        Some(&self.data[start..end])
+    }
+}
 
+struct GenericIterator<I, D> {
+    index: I,
+    data: D,
+    chunk: [u64; 64],
+    remaining_ints: usize,
+    in_chunk_idx: usize,
+    last_chunk_marker: usize,
+}
+
+impl<I: Iterator<Item=u64>, D: NextChunkOfInts> GenericIterator<I, D> {
+    fn new(index: I, data: D, len: usize) -> Self {
+        let mut res = 
+            GenericIterator {
+                index,
+                data,
+                chunk: [0; 64],
+                remaining_ints: len,
+                in_chunk_idx: 0,
+                last_chunk_marker: 0,
+            };
+
+        res.last_chunk_marker = must_have_or_bug(res.index.next()) as usize;
+        debug_assert_eq!(0, res.last_chunk_marker);
+        res.in_chunk_idx = res.chunk.len();
+
+        res
+    }
+}
+
+impl<I: Iterator<Item=u64>, D: NextChunkOfInts> Iterator for GenericIterator<I, D> {
+    type Item = u64;
+    
+    // TODO: Implement for_each.
+    fn next(&mut self) -> Option<u64> {
+        if self.remaining_ints <= 0 {
+            return None;
+        }
+
+        if self.in_chunk_idx >= self.chunk.len() {
+            let next_chunk_marker = must_have_or_bug(self.index.next()) as usize;
+            let chunk_bit_width = next_chunk_marker - self.last_chunk_marker;
+            let chunk_output_size = min(self.remaining_ints, self.chunk.len());
+
+            self.last_chunk_marker = next_chunk_marker;
+            self.in_chunk_idx = self.chunk.len() - chunk_output_size;
+
+            unpack_lsbs(
+                must_have_or_bug(self.data.take_ints(chunk_bit_width)),
+                chunk_bit_width,
+                &mut self.chunk[self.in_chunk_idx..]);
+        }
+
+        let ret = self.chunk[self.in_chunk_idx];
+        self.in_chunk_idx += 1;
+        self.remaining_ints -= 1;
+        Some(ret)
+    }
+}
+
+pub struct Iter<'a>(
+    GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>, BorrowData<'a>>);
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<u64> {
+        self.0.next()
+    }
+}
+
+impl PackedIntegers {
+    fn iter<'a>(&'a self) -> Iter<'a> {
+        Iter(GenericIterator::new(
+            self.index.bits().into_iter_set_bits(),
+            BorrowData(&self.data[..]),
+            self.len,
+        ))
+    }
+}
+
+impl<'a> IntoIterator for &'a PackedIntegers {
+    type IntoIter = Iter<'a>;
+
+    type Item = u64;
+    
+    fn into_iter(self) -> Iter<'a> {
+        self.iter()
+    }
+}
+
+pub struct IntoIter( 
+    GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<Box<[u8]>>, ConsumeData>);
+
+impl Iterator for IntoIter {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<u64> {
+        self.0.next()
+    }
+}
+
+impl IntoIterator for PackedIntegers {
+    type IntoIter = IntoIter;
+
+    type Item = u64;
+
+    fn into_iter(self) -> IntoIter {
+        IntoIter(GenericIterator::new(
+            self.index.decompose().into_iter_set_bits(),
+            ConsumeData { data: self.data, consume_from: 0 },
+            self.len,
+        ))
+    }
+}
 
 #[cfg(test)]
 extern crate rand;
@@ -530,15 +642,6 @@ mod tests {
             let repacked = PackedIntegers::from_iter(unpacked.iter().cloned());
             prop_assert!(packed.structural_eq(&repacked));
         }
-    }
-
-    #[test]
-    fn pack_lsbs_ready_increment_bug() {
-        // pack_lsbs had a bug where it was always adding 64 new bits every time
-        // this would result in a panic (at least in dev build)
-        let chunk = &[0u64; 2];
-        let mut output = [0u64; 1];
-        assert_eq!(1, pack_lsbs(chunk, 1, &mut output));
     }
 
     proptest! {
