@@ -410,6 +410,7 @@ trait NextChunkOfInts {
     fn take_ints(&mut self, upto_n: usize) -> Option<&[u64]>;
 }
 
+#[derive(Clone, Debug)]
 struct BorrowData<'a>(&'a [u64]);
 
 impl<'a> NextChunkOfInts for BorrowData<'a> {
@@ -424,6 +425,7 @@ impl<'a> NextChunkOfInts for BorrowData<'a> {
     }
 }
 
+#[derive(Clone, Debug)]
 struct ConsumeData {
     data: Box<[u64]>,
     consume_from: usize,
@@ -468,18 +470,9 @@ impl<I: Iterator<Item=u64>, D: NextChunkOfInts> GenericIterator<I, D> {
 
         res
     }
-}
 
-impl<I: Iterator<Item=u64>, D: NextChunkOfInts> Iterator for GenericIterator<I, D> {
-    type Item = u64;
-    
-    // TODO: Implement for_each.
-    fn next(&mut self) -> Option<u64> {
-        if self.remaining_ints <= 0 {
-            return None;
-        }
-
-        if self.in_chunk_idx >= self.chunk.len() {
+    fn prepare_chunk(&mut self) {
+        if self.remaining_ints > 0 && self.in_chunk_idx >= self.chunk.len() {
             let next_chunk_marker = must_have_or_bug(self.index.next()) as usize;
             let chunk_bit_width = next_chunk_marker - self.last_chunk_marker;
             let chunk_output_size = min(self.remaining_ints, self.chunk.len());
@@ -492,11 +485,41 @@ impl<I: Iterator<Item=u64>, D: NextChunkOfInts> Iterator for GenericIterator<I, 
                 chunk_bit_width,
                 &mut self.chunk[self.in_chunk_idx..]);
         }
+    }
+}
+
+impl<I: Iterator<Item=u64>, D: NextChunkOfInts> Iterator for GenericIterator<I, D> {
+    type Item = u64;
+    
+    fn next(&mut self) -> Option<u64> {
+        if self.remaining_ints <= 0 {
+            return None;
+        }
+
+        self.prepare_chunk();
 
         let ret = self.chunk[self.in_chunk_idx];
         self.in_chunk_idx += 1;
         self.remaining_ints -= 1;
         Some(ret)
+    }
+
+    fn for_each<F: FnMut(u64)>(mut self, f: F) {
+        let mut f = f;
+        let mut run_chunk = |s: &mut Self| {
+            (&s.chunk[s.in_chunk_idx..]).into_iter().for_each(|&x| f(x));
+            s.remaining_ints -= s.chunk.len() - s.in_chunk_idx;
+            s.in_chunk_idx = s.chunk.len();
+        };
+
+        if self.in_chunk_idx < self.chunk.len() {
+            run_chunk(&mut self);
+        }
+
+        while self.remaining_ints > 0 {
+            self.prepare_chunk();
+            run_chunk(&mut self);
+        }
     }
 }
 
@@ -508,6 +531,10 @@ impl<'a> Iterator for Iter<'a> {
 
     fn next(&mut self) -> Option<u64> {
         self.0.next()
+    }
+
+    fn for_each<F: FnMut(u64)>(self, f: F) {
+        self.0.for_each(f)
     }
 }
 
@@ -539,6 +566,10 @@ impl Iterator for IntoIter {
 
     fn next(&mut self) -> Option<u64> {
         self.0.next()
+    }
+
+    fn for_each<F: FnMut(u64)>(self, f: F) {
+        self.0.for_each(f)
     }
 }
 
@@ -665,6 +696,25 @@ mod tests {
         fn iter_get_agreement(packed in gen_packed(0..1000)) {
             let unpacked_a : Vec<_> = packed.iter().collect();
             let unpacked_b : Vec<_> = (0..packed.len()).map(|idx| packed.get(idx).unwrap()).collect();
+            prop_assert_eq!(unpacked_a, unpacked_b);
+        }
+
+        #[test]
+        fn iter_next_for_each_agreement(packed in gen_packed(0..1000)) {
+            let mut unpacked_a = Vec::with_capacity(packed.len());
+            {
+                let mut iter = packed.iter();
+                loop {
+                    match iter.next() {
+                        None => break,
+                        Some(x) => unpacked_a.push(x),
+                    }
+                }
+            };
+
+            let mut unpacked_b = Vec::with_capacity(packed.len());
+            packed.iter().for_each(|x| unpacked_b.push(x));
+
             prop_assert_eq!(unpacked_a, unpacked_b);
         }
     }
