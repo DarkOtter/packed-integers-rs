@@ -1,11 +1,14 @@
 [package]
 name = "packed_integers"
 version = "0.1.0"
-authors = ["DarkOtter <>"]
 edition = "2018"
-license = "Apache-2.0"
-description = "A way to pack integers into variable lengths with random access"
+description = "An array of integers packed in varying bit-lengths which supports random access"
 repository = "https://github.com/DarkOtter/packed-integers-rs"
+
+license = "Apache-2.0"
+authors = ["DarkOtter <>"]
+keywords = ["integer", "compression", "array"]
+categories = ["algorithms", "data-structures"]
 
 [features]
 default = []
@@ -22,4 +25,3 @@ version = "0.4"
 [dev-dependencies]
 rand = "0.6"
 proptest = "0.8"
-criterion = "0.2"
