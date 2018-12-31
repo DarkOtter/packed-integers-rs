@@ -26,6 +26,8 @@ fn must_have_or_bug<T>(opt: Option<T>) -> T {
     )
 }
 
+/// An array of integers packed together in blocks using a variable number
+/// of bits for each integer, along with an index to allow fast random access.
 #[derive(Clone, Debug)]
 pub struct PackedIntegers {
     index: IndexedBits<Box<[u8]>>,
@@ -287,6 +289,17 @@ impl PackedIntegers {
         }
     }
 
+    /// Build a packed array of integers from an iterator.
+    ///
+    /// ```
+    /// use packed_integers::*;
+    /// let input_data: Vec<u64> = vec![5, 138, 10, 90, 242, 312, 541, 48];
+    /// let packed = PackedIntegers::from_iter(input_data.iter().cloned());
+    /// assert_eq!(input_data.len(), packed.len());
+    /// for i in 0..input_data.len() {
+    ///     assert_eq!(Some(input_data[i]), packed.get(i));
+    /// }
+    /// ```
     pub fn from_iter<I, T>(iter: I) -> Self
     where
         T: Into<u64>,
@@ -545,6 +558,7 @@ impl<I: Iterator<Item = u64>, D: NextChunkOfInts> Iterator for GenericIterator<I
     }
 }
 
+/// A borrowing iterator over the integers stored in `PackedIntegers`
 pub struct Iter<'a>(GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>, BorrowData<'a>>);
 
 impl<'a> Iterator for Iter<'a> {
@@ -579,6 +593,7 @@ impl<'a> IntoIterator for &'a PackedIntegers {
     }
 }
 
+/// A consuming iterator over the integers stored in `PackedIntegers`
 pub struct IntoIter(GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<Box<[u8]>>, ConsumeData>);
 
 impl Iterator for IntoIter {
@@ -831,7 +846,6 @@ mod tests {
     }
 
     prop_compose! {
-        // TODO: Direct packed data generator
         fn gen_packed(len: impl Into<SizeRange>)
             (data in gen_vec(any::<u64>(), len))
             (index in gen_vec(any::<u8>(), ((data.len() + 7) / 8) + 8),
@@ -890,66 +904,25 @@ mod tests {
             let unpacked: Vec<_> = packed.iter().collect();
             prop_assert_eq!(data, unpacked);
         }
-    }
 
-
-    /*
-
-    #[test]
-    fn iter_basic_tests() {
-        fn check(data: Vec<u64>) {
-            let packed = PackedIntegers::from_iter(data.iter().cloned());
-            assert_eq!(data.len(), packed.len());
+        #[test]
+        fn iter_from_vec_roundtrip(packed in gen_packed(0..1000)) {
             let unpacked: Vec<_> = packed.iter().collect();
-            assert_eq!(data, unpacked);
+            let repacked = PackedIntegers::from_vec(unpacked);
+            prop_assert_eq!(packed, repacked);
         }
 
-        check(vec![]);
-        check(vec![0]);
-        check(vec![u64::max_value()]);
-        check(vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        check(vec![42; 424]);
-    }
-
-    proptest! {
         #[test]
-        fn pack_iter_round_trip(data in gen_data(0..1000)) {
+        fn from_iter_iter_roundtrip(data in gen_data(0..1000)) {
             let packed = PackedIntegers::from_iter(data.iter().cloned());
-            prop_assert_eq!(data.len(), packed.len());
             let unpacked: Vec<_> = packed.iter().collect();
             prop_assert_eq!(data, unpacked);
         }
 
         #[test]
-        fn iter_pack_round_trip(packed in gen_packed(0..1000)) {
-            let unpacked: Vec<_> = packed.iter().collect();
-            let repacked = PackedIntegers::from_iter(unpacked.iter().cloned());
+        fn iter_from_iter_roundtrip(packed in gen_packed(0..1000)) {
+            let repacked = PackedIntegers::from_iter(packed.iter());
             prop_assert_eq!(packed, repacked);
-        }
-    }
-
-    proptest! {
-        #[test]
-        fn from_iter_is_repeatable(data in gen_data(0..1000)) {
-            let build_a = PackedIntegers::from_iter(data.iter().cloned());
-            let build_b = PackedIntegers::from_iter(data.iter().cloned());
-
-            prop_assert!(build_a.structural_eq(&build_b));
-        }
-
-        #[test]
-        fn from_iter_from_vec_agreement(data in gen_data(0..1000)) {
-            let build_a = PackedIntegers::from_iter(data.iter().cloned());
-            let build_b = PackedIntegers::from_vec(data);
-
-            prop_assert!(build_a.structural_eq(&build_b));
-        }
-
-        #[test]
-        fn iter_get_agreement(packed in gen_packed(0..1000)) {
-            let unpacked_a : Vec<_> = packed.iter().collect();
-            let unpacked_b : Vec<_> = (0..packed.len()).map(|idx| packed.get(idx).unwrap()).collect();
-            prop_assert_eq!(unpacked_a, unpacked_b);
         }
 
         #[test]
@@ -971,6 +944,4 @@ mod tests {
             prop_assert_eq!(unpacked_a, unpacked_b);
         }
     }
-    
-     */
 }
