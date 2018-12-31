@@ -1,5 +1,5 @@
 [package]
-name = "packed_integers"
+name = "packed_integer_array"
 version = "0.1.0"
 edition = "2018"
 description = "An array of integers packed in varying bit-lengths which supports random access"
@@ -9,6 +9,9 @@ license = "Apache-2.0"
 authors = ["DarkOtter <>"]
 keywords = ["integer", "compression", "array"]
 categories = ["algorithms", "data-structures"]
+
+[badges]
+travis-ci = { repository = "DarkOtter/packed-integers-rs" }
 
 [features]
 default = []
