@@ -192,7 +192,7 @@ impl PackedIntegers {
     /// index may mean more space is used overall in some cases).
     ///
     /// ```
-    /// use crate::packed_integers::*;
+    /// use ::packed_integer_array::PackedIntegers;
     /// let input_data: Vec<u64> = vec![5, 138, 10, 90, 242, 312, 541, 48];
     /// let packed = PackedIntegers::from_vec(input_data.clone());
     /// assert_eq!(input_data.len(), packed.len());
@@ -289,7 +289,7 @@ impl PackedIntegers {
     /// Build a packed array of integers from an iterator.
     ///
     /// ```
-    /// use crate::packed_integers::*;
+    /// use ::packed_integer_array::PackedIntegers;
     /// let input_data: Vec<u64> = vec![5, 138, 10, 90, 242, 312, 541, 48];
     /// let packed = PackedIntegers::from_iter(input_data.iter().cloned());
     /// assert_eq!(input_data.len(), packed.len());
@@ -388,7 +388,7 @@ impl PackedIntegers {
     ///
     /// ```
     /// use rand::prelude::*;
-    /// use crate::packed_integers::*;
+    /// use ::packed_integer_array::PackedIntegers;
     /// let mut rng = rand::thread_rng();
     /// let len = rng.gen_range(137, 549);
     /// let unpacked: Vec<u64> = (0..len).map(|_| rng.gen()).collect();
@@ -577,7 +577,7 @@ impl PackedIntegers {
     ///
     /// ```
     /// use rand::prelude::*;
-    /// use crate::packed_integers::*;
+    /// use ::packed_integer_array::PackedIntegers;
     /// let mut rng = rand::thread_rng();
     /// let len = rng.gen_range(0, 10000);
     /// let data: Vec<u64> = (0..len).map(|_| rng.gen()).collect();
