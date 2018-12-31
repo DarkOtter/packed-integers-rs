@@ -21,9 +21,7 @@ extern crate indexed_bitvec_core;
 use indexed_bitvec::{Bits, IndexedBits};
 
 fn must_have_or_bug<T>(opt: Option<T>) -> T {
-    opt.expect(
-        "If this happens there is a bug in the PackedIntegers implementation",
-    )
+    opt.expect("If this happens there is a bug in the PackedIntegers implementation")
 }
 
 /// An array of integers packed together in blocks using a variable number
@@ -38,8 +36,9 @@ pub struct PackedIntegers {
 #[cfg(feature = "implement_heapsize")]
 impl heapsize::HeapSizeOf for PackedIntegers {
     fn heap_size_of_children(&self) -> usize {
-        self.index.heap_size_of_children() + self.data.heap_size_of_children() +
-            self.len.heap_size_of_children()
+        self.index.heap_size_of_children()
+            + self.data.heap_size_of_children()
+            + self.len.heap_size_of_children()
     }
 }
 
@@ -65,9 +64,10 @@ impl BuildIndex {
     }
 
     fn into_indexed_bits(self) -> IndexedBits<Box<[u8]>> {
-        IndexedBits::build_index(must_have_or_bug(
-            Bits::from(self.data.into_boxed_slice(), self.used_bits),
-        ))
+        IndexedBits::build_index(must_have_or_bug(Bits::from(
+            self.data.into_boxed_slice(),
+            self.used_bits,
+        )))
     }
 
     fn push_one_bit(&mut self) {
@@ -421,17 +421,16 @@ impl PackedIntegers {
         let whole_words_offset = bit_idx_in_block / 64;
         let in_word_offset = bit_idx_in_block % 64;
 
-        let first_part = {
-            (self.data[block_start + whole_words_offset] << in_word_offset) >> (64 - bit_width)
-        };
+        let first_part =
+            { (self.data[block_start + whole_words_offset] << in_word_offset) >> (64 - bit_width) };
 
         if in_word_offset + bit_width <= 64 {
             Some(first_part)
         } else {
             Some(
-                first_part |
-                    (self.data[block_start + whole_words_offset + 1] >>
-                         (128 - (in_word_offset + bit_width))),
+                first_part
+                    | (self.data[block_start + whole_words_offset + 1]
+                        >> (128 - (in_word_offset + bit_width))),
             )
         }
     }
@@ -559,7 +558,9 @@ impl<I: Iterator<Item = u64>, D: NextChunkOfInts> Iterator for GenericIterator<I
 }
 
 /// A borrowing iterator over the integers stored in `PackedIntegers`
-pub struct Iter<'a>(GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>, BorrowData<'a>>);
+pub struct Iter<'a>(
+    GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>, BorrowData<'a>>,
+);
 
 impl<'a> Iterator for Iter<'a> {
     type Item = u64;
@@ -574,7 +575,20 @@ impl<'a> Iterator for Iter<'a> {
 }
 
 impl PackedIntegers {
-    fn iter<'a>(&'a self) -> Iter<'a> {
+    /// Iterate through the packed integers without
+    /// consuming self.
+    ///
+    /// ```
+    /// use rand::prelude::*;
+    /// use packed_integers::*;
+    /// let mut rng = rand::thread_rng();
+    /// let len = rng.gen_range(0, 10000);
+    /// let data: Vec<u64> = (0..len).map(|_| rng.gen()).collect();
+    /// let packed = PackedIntegers::from_iter(data.iter().cloned());
+    /// let unpacked: Vec<_> = packed.iter().collect();
+    /// assert_eq!(data, unpacked);
+    /// ```
+    pub fn iter<'a>(&'a self) -> Iter<'a> {
         Iter(GenericIterator::new(
             self.index.bits().into_iter_set_bits(),
             BorrowData(&self.data[..]),
@@ -594,7 +608,9 @@ impl<'a> IntoIterator for &'a PackedIntegers {
 }
 
 /// A consuming iterator over the integers stored in `PackedIntegers`
-pub struct IntoIter(GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<Box<[u8]>>, ConsumeData>);
+pub struct IntoIter(
+    GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<Box<[u8]>>, ConsumeData>,
+);
 
 impl Iterator for IntoIter {
     type Item = u64;
@@ -625,7 +641,7 @@ impl IntoIterator for PackedIntegers {
     }
 }
 
-use std::cmp::{Ordering, Ord};
+use std::cmp::{Ord, Ordering};
 
 impl std::cmp::Ord for PackedIntegers {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -635,12 +651,10 @@ impl std::cmp::Ord for PackedIntegers {
         loop {
             let self_int = match self_iter.next() {
                 Some(i) => i,
-                None => {
-                    match other_iter.next() {
-                        None => return Ordering::Equal,
-                        Some(_) => return Ordering::Less,
-                    }
-                }
+                None => match other_iter.next() {
+                    None => return Ordering::Equal,
+                    Some(_) => return Ordering::Less,
+                },
             };
             let other_int = match other_iter.next() {
                 Some(i) => i,
@@ -676,15 +690,15 @@ impl PackedIntegers {
         }
 
         let init_chunks = self.index.rank_ones(self.data.len() as u64).unwrap() - 1;
-        let last_chunk_width = self.index.select_ones(init_chunks + 1).unwrap() -
-            self.index.select_ones(init_chunks).unwrap();
+        let last_chunk_width = self.index.select_ones(init_chunks + 1).unwrap()
+            - self.index.select_ones(init_chunks).unwrap();
         let last_chunk_width = last_chunk_width as usize;
-        let last_chunk_data_len = self.data.len() -
-            self.index.select_ones(init_chunks).unwrap() as usize;
+        let last_chunk_data_len =
+            self.data.len() - self.index.select_ones(init_chunks).unwrap() as usize;
 
         let max_last_chunk_len = (last_chunk_data_len * 64) / last_chunk_width;
-        let min_last_chunk_len = (((last_chunk_data_len - 1) * 64 + 1) + (last_chunk_width - 1)) /
-            last_chunk_width;
+        let min_last_chunk_len =
+            (((last_chunk_data_len - 1) * 64 + 1) + (last_chunk_width - 1)) / last_chunk_width;
         let init_chunks_len = init_chunks as usize * 64;
         (
             init_chunks_len + min_last_chunk_len,
@@ -729,7 +743,8 @@ impl PackedIntegers {
             Err(format!(
                 "Length does not match computing length: actual {}, expected between {} and {}",
                 self.len(),
-                low, high,
+                low,
+                high,
             ))?;
         }
 
@@ -746,9 +761,9 @@ extern crate proptest;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-    use proptest::collection::SizeRange;
     use proptest::collection::vec as gen_vec;
+    use proptest::collection::SizeRange;
+    use proptest::prelude::*;
 
     prop_compose! {
         fn gen_data(len: impl Into<SizeRange>)
@@ -759,7 +774,7 @@ mod tests {
             -> Vec<u64> {
                 let mut data = data;
 
-                let iter = 
+                let iter =
                 data
                     .chunks_mut(64)
                     .zip(chunk_info.into_iter());
@@ -785,9 +800,11 @@ mod tests {
 
     proptest! {
         #[test]
-        fn from_vec_matches_invariants(data in gen_data(0..1000)) {
+        fn from_vec_matches_invariants_and_len(data in gen_data(0..1000)) {
+            let data_len = data.len();
             let packed = PackedIntegers::from_vec(data);
             prop_assert_eq!(Ok(()), packed.invariant());
+            prop_assert_eq!(data_len, packed.len());
         }
 
         #[test]
@@ -798,9 +815,11 @@ mod tests {
         }
 
         #[test]
-        fn from_iter_matches_invariants(data in gen_data(0..1000)) {
+        fn from_iter_matches_invariants_and_len(data in gen_data(0..1000)) {
+            let data_len = data.len();
             let packed = PackedIntegers::from_iter(data.into_iter());
             prop_assert_eq!(Ok(()), packed.invariant());
+            prop_assert_eq!(data_len, packed.len());
         }
 
         #[test]
@@ -874,12 +893,12 @@ mod tests {
                             .unwrap());
 
                 let mut res =
-                PackedIntegers {
-                    index,
-                    data: data.into_boxed_slice(),
-                    // Temporary length
-                    len: 0,
-                };
+                    PackedIntegers {
+                        index,
+                        data: data.into_boxed_slice(),
+                        // Temporary length
+                        len: 0,
+                    };
 
                 let (low_len, high_len) = res.compute_len();
                 if low_len == high_len {
@@ -894,7 +913,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn packed_gen_matches_invariants(packed in gen_packed(0..1000)) {
+        fn gen_packed_matches_invariants(packed in gen_packed(0..1000)) {
             prop_assert_eq!(Ok(()), packed.invariant());
         }
 
@@ -926,6 +945,14 @@ mod tests {
         }
 
         #[test]
+        fn test_get(packed in gen_packed(0..1000)) {
+            let unpacked: Vec<_> = packed.iter().collect();
+            for idx in 0..(packed.len() + 128) {
+                prop_assert_eq!(unpacked.get(idx).cloned(), packed.get(idx), "Differs at idx {}", idx);
+            }
+        }
+
+        #[test]
         fn iter_next_for_each_agreement(packed in gen_packed(0..1000)) {
             let mut unpacked_a = Vec::with_capacity(packed.len());
             {
@@ -942,6 +969,28 @@ mod tests {
             packed.iter().for_each(|x| unpacked_b.push(x));
 
             prop_assert_eq!(unpacked_a, unpacked_b);
+        }
+
+        #[test]
+        fn iter_into_iter_agreement(packed in gen_packed(0..1000)) {
+            let unpacked_a: Vec<_> = packed.iter().collect();
+            let unpacked_b: Vec<_> = packed.into_iter().collect();
+            prop_assert_eq!(unpacked_a, unpacked_b);
+        }
+
+        #[test]
+        fn test_cmp_pair(x in gen_packed(0..1000), y in gen_packed(0..1000)) {
+            let unpacked_x: Vec<_> = x.iter().collect();
+            let unpacked_y: Vec<_> = y.iter().collect();
+
+            prop_assert_eq!(unpacked_x.cmp(&unpacked_y), x.cmp(&y));
+            prop_assert_eq!(unpacked_x.eq(&unpacked_y), x.eq(&y));
+        }
+
+        #[test]
+        fn test_cmp_single(x in gen_packed(0..1000)) {
+            prop_assert_eq!(Ordering::Equal, x.cmp(&x));
+            prop_assert_eq!(true, x.eq(&x));
         }
     }
 }
