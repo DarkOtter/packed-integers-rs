@@ -13,7 +13,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-
+//! An array of integers packed together with variable bit-length.
 use indexed_bitvec::{Bits, IndexedBits};
 use std::cmp::{max, min};
 
