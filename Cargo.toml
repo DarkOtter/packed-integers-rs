@@ -1,6 +1,6 @@
 [package]
 name = "packed_integer_array"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2018"
 description = "An array of integers packed in varying bit-lengths which supports random access"
 repository = "https://github.com/DarkOtter/packed-integers-rs"
