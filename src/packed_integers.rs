@@ -30,64 +30,18 @@ pub struct PackedIntegers {
     len: usize,
 }
 
+fn bitvec_box_and_index(bits: Bits<Vec<u8>>) -> IndexedBits<Box<[u8]>> {
+    let (bytes, used_bits) = bits.decompose();
+    IndexedBits::build_from_bytes(bytes.into_boxed_slice(), used_bits)
+        .expect("Size should be ok - we got it from Bits")
+}
+
 #[cfg(feature = "implement_heapsize")]
 impl heapsize::HeapSizeOf for PackedIntegers {
     fn heap_size_of_children(&self) -> usize {
         self.index.heap_size_of_children()
             + self.data.heap_size_of_children()
             + self.len.heap_size_of_children()
-    }
-}
-
-#[derive(Clone, Debug)]
-struct BuildIndex {
-    data: Vec<u8>,
-    used_bits: u64,
-}
-
-impl BuildIndex {
-    fn new() -> Self {
-        BuildIndex {
-            data: Vec::new(),
-            used_bits: 0,
-        }
-    }
-
-    fn with_capacity(i: usize) -> Self {
-        BuildIndex {
-            data: Vec::with_capacity((i + 8) / 8),
-            used_bits: 0,
-        }
-    }
-
-    fn into_indexed_bits(self) -> IndexedBits<Box<[u8]>> {
-        IndexedBits::build_index(must_have_or_bug(Bits::from(
-            self.data.into_boxed_slice(),
-            self.used_bits,
-        )))
-    }
-
-    fn push_one_bit(&mut self) {
-        let within_byte = self.used_bits % 8;
-        self.used_bits += 1;
-        if within_byte == 0 {
-            self.data.push(0x80);
-        } else {
-            let byte = self.data.len() - 1;
-            self.data[byte] |= 0x80u8 >> within_byte;
-        }
-    }
-
-    fn push_zero_bits(&mut self, n_zeros: usize) {
-        if n_zeros == 0 {
-            return;
-        }
-        self.used_bits += n_zeros as u64;
-        let need_bytes = (self.used_bits + 7) / 8;
-        let add_bytes = need_bytes as usize - self.data.len();
-        for _ in 0..add_bytes {
-            self.data.push(0)
-        }
     }
 }
 
@@ -202,11 +156,12 @@ impl PackedIntegers {
     /// ```
     pub fn from_vec(mut data: Vec<u64>) -> Self {
         let total_elements = data.len();
-        let mut index = BuildIndex::with_capacity(total_elements);
+        let mut index = Bits::from_bytes(Vec::with_capacity(total_elements), 0)
+            .expect("Should always have space for 0 bits");
 
         fn build_initially_with_buffer(
             data: &mut Vec<u64>,
-            index: &mut BuildIndex,
+            index: &mut Bits<Vec<u8>>,
         ) -> (usize, usize) {
             let total_elements = data.len();
             let mut buffer = [0u64; 64];
@@ -230,8 +185,10 @@ impl PackedIntegers {
                 debug_assert!(chunk_output_length > 0);
                 debug_assert!(chunk_output_length <= 64);
 
-                index.push_one_bit();
-                index.push_zero_bits(chunk_bit_width - 1);
+                index.push(true);
+                for _ in 0..(chunk_bit_width - 1) {
+                    index.push(false);
+                }
 
                 (&mut data[write_at..write_at + chunk_output_length])
                     .copy_from_slice(&buffer[..chunk_output_length]);
@@ -267,8 +224,10 @@ impl PackedIntegers {
             debug_assert!(chunk_output_length > 0);
             debug_assert!(chunk_output_length <= 64);
 
-            index.push_one_bit();
-            index.push_zero_bits(chunk_bit_width - 1);
+            index.push(true);
+            for _ in 0..(chunk_bit_width - 1) {
+                index.push(false);
+            }
 
             read_from = chunk_start + chunk_len;
             write_at += chunk_output_length;
@@ -276,11 +235,11 @@ impl PackedIntegers {
             debug_assert!(write_at + 64 <= read_from);
         }
 
-        index.push_one_bit();
+        index.push(true);
         data.truncate(write_at);
 
         PackedIntegers {
-            index: index.into_indexed_bits(),
+            index: bitvec_box_and_index(index),
             data: data.into_boxed_slice(),
             len: total_elements,
         }
@@ -307,11 +266,15 @@ impl PackedIntegers {
             (min, None) => min,
             (_, Some(max)) => max,
         };
-        let mut index = if size_hint >= 64 {
-            BuildIndex::with_capacity(size_hint)
-        } else {
-            BuildIndex::new()
-        };
+        let mut index = Bits::from_bytes(
+            if size_hint >= 64 {
+                Vec::with_capacity(size_hint)
+            } else {
+                Vec::new()
+            },
+            0,
+        )
+        .expect("Should always have space for 0 bits");
         let mut data = if size_hint >= 64 {
             Vec::with_capacity(64)
         } else {
@@ -349,8 +312,10 @@ impl PackedIntegers {
                 };
                 data.truncate(write_at + output_size);
 
-                index.push_one_bit();
-                index.push_zero_bits(bit_width - 1);
+                index.push(true);
+                for _ in 0..(bit_width - 1) {
+                    index.push(false);
+                }
             };
 
             for item in iter {
@@ -369,10 +334,10 @@ impl PackedIntegers {
             }
         }
 
-        index.push_one_bit();
+        index.push(true);
 
         PackedIntegers {
-            index: index.into_indexed_bits(),
+            index: bitvec_box_and_index(index),
             data: data.into_boxed_slice(),
             len: total_elements,
         }
@@ -556,7 +521,7 @@ impl<I: Iterator<Item = u64>, D: NextChunkOfInts> Iterator for GenericIterator<I
 
 /// A borrowing iterator over the integers stored in `PackedIntegers`
 pub struct Iter<'a>(
-    GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<&'a [u8]>, BorrowData<'a>>,
+    GenericIterator<indexed_bitvec::bits::OneBitIndexIterator<&'a [u8]>, BorrowData<'a>>,
 );
 
 impl<'a> Iterator for Iter<'a> {
@@ -587,7 +552,7 @@ impl PackedIntegers {
     /// ```
     pub fn iter<'a>(&'a self) -> Iter<'a> {
         Iter(GenericIterator::new(
-            self.index.bits().into_iter_set_bits(),
+            self.index.bits().into_iter_one_bits(),
             BorrowData(&self.data[..]),
             self.len,
         ))
@@ -606,7 +571,7 @@ impl<'a> IntoIterator for &'a PackedIntegers {
 
 /// A consuming iterator over the integers stored in `PackedIntegers`
 pub struct IntoIter(
-    GenericIterator<indexed_bitvec_core::bits::SetBitIndexIterator<Box<[u8]>>, ConsumeData>,
+    GenericIterator<indexed_bitvec::bits::OneBitIndexIterator<Box<[u8]>>, ConsumeData>,
 );
 
 impl Iterator for IntoIter {
@@ -628,7 +593,7 @@ impl IntoIterator for PackedIntegers {
 
     fn into_iter(self) -> IntoIter {
         IntoIter(GenericIterator::new(
-            self.index.decompose().into_iter_set_bits(),
+            self.index.decompose().into_iter_one_bits(),
             ConsumeData {
                 data: self.data,
                 consume_from: 0,
@@ -710,9 +675,9 @@ impl PackedIntegers {
             Some(true) => (),
         };
 
-        if self.index.bits().used_bits() <= self.data.len() as u64 {
+        if self.index.bits().len() <= self.data.len() as u64 {
             Err("Index is not long enough")?;
-        } else if self.index.bits().used_bits() > self.data.len() as u64 + 64 {
+        } else if self.index.bits().len() > self.data.len() as u64 + 64 {
             Err("Index is longer than it should be")?;
         }
 
@@ -723,7 +688,7 @@ impl PackedIntegers {
             Err("Expected exactly one but after the data range")?;
         }
 
-        let mut iter = self.index.bits().into_iter_set_bits();
+        let mut iter = self.index.bits().into_iter_one_bits();
         let mut last_set_index = iter.next().unwrap();
 
         debug_assert!(last_set_index == 0);
@@ -833,12 +798,12 @@ mod tests {
         set_bits(&mut index_bytes, vec![0]);
 
         let index_bits_len = index_bytes.len() as u64 * 8;
-        let index_bits = Bits::from(index_bytes, index_bits_len).unwrap();
+        let index_bits = Bits::from_bytes(index_bytes, index_bits_len).unwrap();
 
         let mut break_runs_at = Vec::with_capacity(64);
 
         {
-            let mut iter = index_bits.iter_set_bits();
+            let mut iter = index_bits.iter_one_bits();
             let mut last_set_index = iter.next().unwrap();
             debug_assert_eq!(0, last_set_index);
             for set_index in iter {
@@ -867,11 +832,11 @@ mod tests {
 
                 let index_used_bits = {
                     let set_bits_in_data_range =
-                        Bits::from(&index[..], data.len() as u64)
+                        Bits::from_bytes(&index[..], data.len() as u64)
                         .unwrap()
                         .count_ones();
                     let first_set_bit_index_after_data_range =
-                        Bits::from(&index[..], index.len() as u64 * 8)
+                        Bits::from_bytes(&index[..], index.len() as u64 * 8)
                         .unwrap()
                         .select_ones(set_bits_in_data_range)
                         .unwrap();
@@ -879,9 +844,8 @@ mod tests {
                 };
 
                 let index =
-                    IndexedBits::build_index(
-                        Bits::from(index.into_boxed_slice(), index_used_bits)
-                            .unwrap());
+                    IndexedBits::build_from_bytes(
+                        index.into_boxed_slice(), index_used_bits).unwrap();
 
                 let mut res =
                     PackedIntegers {

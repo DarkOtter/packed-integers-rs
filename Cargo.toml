@@ -16,11 +16,10 @@ travis-ci = { repository = "DarkOtter/packed-integers-rs" }
 
 [features]
 default = []
-implement_heapsize = ["heapsize", "indexed_bitvec/implement_heapsize", "indexed_bitvec_core/implement_heapsize"]
+implement_heapsize = ["heapsize", "indexed_bitvec/implement_heapsize"]
 
 [dependencies]
-indexed_bitvec = "2.3"
-indexed_bitvec_core = "3.0"
+indexed_bitvec = "4"
 
 [dependencies.heapsize]
 optional = true

@@ -15,7 +15,6 @@
 */
 
 extern crate indexed_bitvec;
-extern crate indexed_bitvec_core;
 
 #[cfg(test)]
 extern crate rand;
