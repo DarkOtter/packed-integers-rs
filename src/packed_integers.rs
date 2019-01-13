@@ -45,23 +45,23 @@ impl heapsize::HeapSizeOf for PackedIntegers {
     }
 }
 
-fn find_bit_width(chunk: &[u64]) -> usize {
+fn find_bit_width(chunk: &[u64]) -> u32 {
     let leading_zeros = chunk.iter().map(|x| x.leading_zeros()).min().unwrap_or(0);
-    max(1, 64 - leading_zeros as usize)
+    max(1, 64 - leading_zeros)
 }
 
-fn compressed_length(n: usize, n_bits: usize) -> usize {
-    ((n * n_bits) + 63) / 64
+fn compressed_length(n: usize, n_bits: u32) -> usize {
+    ((n * n_bits as usize) + 63) / 64
 }
 
-fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) {
+fn pack_lsbs(chunk: &[u64], n_bits: u32, into: &mut [u64]) {
     debug_assert!(chunk.len() > 0);
     debug_assert!(chunk.len() <= 64);
     debug_assert!(n_bits > 0);
     debug_assert!(n_bits <= 64);
     debug_assert!(into.len() == compressed_length(chunk.len(), n_bits));
 
-    let leading_zeros = (64 - n_bits) as u32;
+    let leading_zeros = 64 - n_bits;
     let mut into = into.iter_mut();
     let mut ready_bits = 0;
     let mut building_part = 0u64;
@@ -85,14 +85,13 @@ fn pack_lsbs(chunk: &[u64], n_bits: usize, into: &mut [u64]) {
     }
 }
 
-fn unpack_lsbs(from: &[u64], n_bits: usize, chunk: &mut [u64]) {
+fn unpack_lsbs(from: &[u64], n_bits: u32, chunk: &mut [u64]) {
     debug_assert!(chunk.len() > 0);
     debug_assert!(chunk.len() <= 64);
     debug_assert!(n_bits > 0);
     debug_assert!(n_bits <= 64);
     debug_assert!(from.len() == compressed_length(chunk.len(), n_bits));
 
-    let n_bits = n_bits as u32;
     let leading_zeros = 64 - n_bits;
     let mut chunk = chunk.iter_mut();
     let mut ready_bits = 0;
@@ -159,6 +158,28 @@ impl PackedIntegers {
         let mut index = Bits::from_bytes(Vec::with_capacity(total_elements), 0)
             .expect("Should always have space for 0 bits");
 
+        fn pack_chunk(chunk: &[u64], into: &mut [u64], index: &mut Bits<Vec<u8>>) -> usize {
+            let bit_width = find_bit_width(chunk);
+            let output_length = compressed_length(chunk.len(), bit_width);
+            debug_assert!(
+                into.len() >= output_length,
+                "Didn't have enough space to output"
+            );
+            pack_lsbs(chunk, bit_width, &mut into[..output_length]);
+
+            debug_assert!(bit_width > 0);
+            debug_assert!(bit_width <= 64);
+            debug_assert!(output_length > 0);
+            debug_assert!(output_length <= 64);
+
+            index.push(true);
+            for _ in 0..(bit_width - 1) {
+                index.push(false);
+            }
+
+            output_length
+        }
+
         fn build_initially_with_buffer(
             data: &mut Vec<u64>,
             index: &mut Bits<Vec<u8>>,
@@ -171,24 +192,8 @@ impl PackedIntegers {
             while read_from < total_elements && write_at + 64 > read_from {
                 let chunk_start = read_from;
                 let chunk_end = min(total_elements, chunk_start + 64);
-
-                let (chunk_bit_width, chunk_output_length) = {
-                    let chunk = &data[chunk_start..chunk_end];
-                    let bit_width = find_bit_width(chunk);
-                    let output_length = compressed_length(chunk.len(), bit_width);
-                    pack_lsbs(chunk, bit_width, &mut buffer[..output_length]);
-                    (bit_width, output_length)
-                };
-
-                debug_assert!(chunk_bit_width > 0);
-                debug_assert!(chunk_bit_width <= 64);
-                debug_assert!(chunk_output_length > 0);
-                debug_assert!(chunk_output_length <= 64);
-
-                index.push(true);
-                for _ in 0..(chunk_bit_width - 1) {
-                    index.push(false);
-                }
+                let chunk_output_length =
+                    pack_chunk(&data[chunk_start..chunk_end], &mut buffer[..], index);
 
                 (&mut data[write_at..write_at + chunk_output_length])
                     .copy_from_slice(&buffer[..chunk_output_length]);
@@ -210,24 +215,11 @@ impl PackedIntegers {
             let (writing_part, reading_part) = data.as_mut_slice().split_at_mut(chunk_start);
             let chunk_len = min(reading_part.len(), 64);
 
-            let chunk = &reading_part[..chunk_len];
-            let chunk_bit_width = find_bit_width(chunk);
-            let chunk_output_length = compressed_length(chunk.len(), chunk_bit_width);
-            pack_lsbs(
-                chunk,
-                chunk_bit_width,
-                &mut writing_part[write_at..write_at + chunk_output_length],
+            let chunk_output_length = pack_chunk(
+                &reading_part[..chunk_len],
+                &mut writing_part[write_at..],
+                &mut index,
             );
-
-            debug_assert!(chunk_bit_width > 0);
-            debug_assert!(chunk_bit_width <= 64);
-            debug_assert!(chunk_output_length > 0);
-            debug_assert!(chunk_output_length <= 64);
-
-            index.push(true);
-            for _ in 0..(chunk_bit_width - 1) {
-                index.push(false);
-            }
 
             read_from = chunk_start + chunk_len;
             write_at += chunk_output_length;
@@ -294,7 +286,8 @@ impl PackedIntegers {
                 debug_assert!(bit_width > 0);
                 debug_assert!(bit_width <= 64);
 
-                let output_size = ((bit_width * chunk.len()) + 63) / 64;
+                // TODO: Seems wrong to have this
+                let output_size = ((bit_width as usize * chunk.len()) + 63) / 64;
                 debug_assert!(output_size > 0);
                 debug_assert!(output_size <= 64);
                 debug_assert!(output_size <= chunk.len());
@@ -477,7 +470,7 @@ impl<I: Iterator<Item = u64>, D: NextChunkOfInts> GenericIterator<I, D> {
 
             unpack_lsbs(
                 must_have_or_bug(self.data.take_ints(chunk_bit_width)),
-                chunk_bit_width,
+                chunk_bit_width as u32,
                 &mut self.chunk[self.in_chunk_idx..],
             );
         }
