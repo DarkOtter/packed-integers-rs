@@ -171,6 +171,7 @@ impl PackedIntegers {
             debug_assert!(bit_width <= 64);
             debug_assert!(output_length > 0);
             debug_assert!(output_length <= 64);
+            debug_assert!(output_length <= chunk.len());
 
             index.push(true);
             for _ in 0..(bit_width - 1) {
@@ -283,18 +284,17 @@ impl PackedIntegers {
                 debug_assert!(chunk.len() <= 64);
 
                 let bit_width = find_bit_width(chunk);
+                let output_length = compressed_length(chunk.len(), bit_width);
+
                 debug_assert!(bit_width > 0);
                 debug_assert!(bit_width <= 64);
+                debug_assert!(output_length > 0);
+                debug_assert!(output_length <= 64);
+                debug_assert!(output_length <= chunk.len());
 
-                // TODO: Seems wrong to have this
-                let output_size = ((bit_width as usize * chunk.len()) + 63) / 64;
-                debug_assert!(output_size > 0);
-                debug_assert!(output_size <= 64);
-                debug_assert!(output_size <= chunk.len());
-
-                data.reserve(output_size);
+                data.reserve(output_length);
                 let write_at = data.len();
-                for _ in 0..output_size {
+                for _ in 0..output_length {
                     data.push(0)
                 }
 
