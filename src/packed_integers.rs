@@ -54,7 +54,7 @@ fn compressed_length(n: usize, n_bits: u32) -> usize {
     ((n * n_bits as usize) + 63) / 64
 }
 
-fn pack_lsbs(chunk: &[u64], n_bits: u32, into: &mut [u64]) {
+fn pack_lsbs_generic(chunk: &[u64], n_bits: u32, into: &mut [u64]) {
     debug_assert!(chunk.len() > 0);
     debug_assert!(chunk.len() <= 64);
     debug_assert!(n_bits > 0);
@@ -85,7 +85,43 @@ fn pack_lsbs(chunk: &[u64], n_bits: u32, into: &mut [u64]) {
     }
 }
 
-fn unpack_lsbs(from: &[u64], n_bits: u32, chunk: &mut [u64]) {
+fn pack_full_chunk_pow2(chunk: &[u64], n_bits: u32, into: &mut [u64]) {
+    debug_assert_eq!(64, chunk.len());
+    debug_assert!(n_bits.is_power_of_two());
+    debug_assert!(n_bits <= 64);
+    debug_assert_eq!(compressed_length(chunk.len(), n_bits), into.len());
+    debug_assert_eq!(n_bits, into.len() as u32);
+
+    debug_assert_eq!(0, 64 % n_bits);
+    let parts = chunk.chunks_exact((64 / n_bits) as usize);
+    debug_assert_eq!(0, parts.remainder().len());
+    let mut into = into.iter_mut();
+    parts.for_each(|part| {
+        let mut packed_i = 0u64;
+        part.iter()
+            .enumerate()
+            .for_each(|(i, &x)| packed_i |= x << (64 - (i as u32 + 1) * n_bits));
+        *(into.next().expect("Must have another int to write")) = packed_i;
+    });
+}
+
+fn pack_lsbs(chunk: &[u64], n_bits: u32, into: &mut [u64]) {
+    if n_bits == 64 {
+        debug_assert_eq!(chunk.len(), into.len());
+        into.copy_from_slice(chunk);
+    } else if chunk.len() != 64 {
+        pack_lsbs_generic(chunk, n_bits, into);
+    } else {
+        debug_assert_eq!(64, chunk.len());
+        if n_bits.is_power_of_two() {
+            pack_full_chunk_pow2(chunk, n_bits, into);
+        } else {
+            pack_lsbs_generic(chunk, n_bits, into);
+        }
+    }
+}
+
+fn unpack_lsbs_generic(from: &[u64], n_bits: u32, chunk: &mut [u64]) {
     debug_assert!(chunk.len() > 0);
     debug_assert!(chunk.len() <= 64);
     debug_assert!(n_bits > 0);
@@ -127,6 +163,15 @@ fn unpack_lsbs(from: &[u64], n_bits: u32, chunk: &mut [u64]) {
                 }
             }
         }
+    }
+}
+
+fn unpack_lsbs(from: &[u64], n_bits: u32, chunk: &mut [u64]) {
+    if n_bits == 64 {
+        debug_assert_eq!(from.len(), chunk.len());
+        chunk.copy_from_slice(from);
+    } else {
+        unpack_lsbs_generic(from, n_bits, chunk);
     }
 }
 
