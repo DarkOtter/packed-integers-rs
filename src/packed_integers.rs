@@ -376,18 +376,15 @@ impl PackedIntegers {
         let whole_words_offset = bit_idx_in_block / 64;
         let in_word_offset = bit_idx_in_block % 64;
 
-        let first_part =
-            { (self.data[block_start + whole_words_offset] << in_word_offset) >> (64 - bit_width) };
+        let mut res =
+            (self.data[block_start + whole_words_offset] << in_word_offset) >> (64 - bit_width);
 
-        if in_word_offset + bit_width <= 64 {
-            Some(first_part)
-        } else {
-            Some(
-                first_part
-                    | (self.data[block_start + whole_words_offset + 1]
-                        >> (128 - (in_word_offset + bit_width))),
-            )
+        if in_word_offset + bit_width > 64 {
+            res |= self.data[block_start + whole_words_offset + 1]
+                >> (128 - (in_word_offset + bit_width));
         }
+
+        Some(res)
     }
 }
 
